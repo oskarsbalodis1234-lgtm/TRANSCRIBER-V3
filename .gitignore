@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.cuda-wheels/
+
+data/
+*.db
+*.tmp
+
+.env
