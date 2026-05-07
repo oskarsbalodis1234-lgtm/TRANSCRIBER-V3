@@ -187,7 +187,8 @@ def transcribe_audio(model, mp3_path, options, log=None):
     # 1. Try Deepgram SDK (Nova-3)
     if deepgram_key:
         try:
-            from deepgram import DeepgramClient, PrerecordedOptions
+            from deepgram import DeepgramClient
+            from deepgram.models.listen.v1 import PrerecordedOptions
             
             log_message(f"[{os.path.basename(mp3_path)}] Attempting Deepgram API...", log)
             started = time.perf_counter()
@@ -211,8 +212,6 @@ def transcribe_audio(model, mp3_path, options, log=None):
         except Exception as e:
             last_error = f"Deepgram failed: {e}"
             log_message(last_error, log)
-    else:
-        log_message("Deepgram: No API key found, skipping.", log)
 
     # 2. Try Groq (Fast & Free, but strict hourly limits)
     if groq_key:
@@ -253,8 +252,6 @@ def transcribe_audio(model, mp3_path, options, log=None):
         except Exception as e:
             last_error = f"Groq failed: {e}"
             log_message(last_error, log)
-    else:
-        log_message("Groq: No API key found, skipping.", log)
 
     # 3. Try OpenAI (Very accurate, paid but reliable)
     if openai_key:
@@ -287,8 +284,6 @@ def transcribe_audio(model, mp3_path, options, log=None):
         except Exception as e:
             last_error = f"OpenAI failed: {e}"
             log_message(last_error, log)
-    else:
-        log_message("OpenAI: No API key found, skipping.", log)
 
     # This point is only reached if all APIs failed or were skipped
     if model is None:
