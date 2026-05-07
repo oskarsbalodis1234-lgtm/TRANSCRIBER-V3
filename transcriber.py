@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import random
 import site
 import time
 
@@ -189,7 +190,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
         url = "https://api.groq.com/openai/v1/audio/transcriptions"
         headers = {"Authorization": f"Bearer {api_key}"}
         
-        max_retries = 5
+        max_retries = 8
         for attempt in range(max_retries):
             try:
                 with open(mp3_path, "rb") as f:
@@ -221,7 +222,8 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 
                 # Retry on Rate Limit (429) or Server Errors (502, 503, 504)
                 if status_code in [429, 502, 503, 504] and attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 10 # 10s, 20s...
+                    # Exponential backoff with jitter: 15s, 30s, 60s...
+                    wait_time = (2 ** attempt) * 15 + random.uniform(0, 5)
                     log_message(f"Groq busy or error ({status_code}). Retrying in {wait_time}s...", log)
                     time.sleep(wait_time)
                     continue
@@ -338,7 +340,7 @@ def run_transcriptions(episode_list=None, log=None):
                 
                 # Add a proactive delay for Groq API to avoid hitting Rate Limits (RPM)
                 if device == "Groq API" and text is not None:
-                    time.sleep(10)
+                    time.sleep(25)
 
             except Exception as e:
                 if device != "cuda" or not cuda_runtime_error(e):
