@@ -73,7 +73,7 @@ def run_downloads(episode_list, log=None):
     
     total = len(episode_list)
     
-    # Download up to 4 episodes at once to speed up the process on Koyeb
+    # Download 2 episodes at once to save memory on Koyeb Free Tier
     download_tasks = [(ep, i, total, session, log) for i, ep in enumerate(episode_list, start=1)]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         list(executor.map(download_episode, download_tasks))

@@ -44,23 +44,23 @@ def run_pipeline(rss_url):
     try:
         ensure_data_dirs()
 
-        from downloader import ingest_rss, run_downloads
-        from main import zip_and_cleanup
-        from transcriber import run_transcriptions
-
         log("state:fetch_rss")
+        from downloader import ingest_rss
         episode_list = ingest_rss(rss_url)
 
         total = len(episode_list)
         log(f"total_episodes:{total}")
 
         log("state:downloading")
+        from downloader import run_downloads
         run_downloads(episode_list, log)
 
         log("state:transcribing")
+        from transcriber import run_transcriptions
         run_transcriptions(episode_list, log)
 
         log("state:zipping")
+        from main import zip_and_cleanup
         zip_and_cleanup(log)
 
         log("state:done")

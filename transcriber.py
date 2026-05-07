@@ -426,12 +426,8 @@ def run_transcriptions(episode_list=None, log=None):
                     log,
                 )
                 model, device = load_transcription_model(log, device_override="cpu")
-                text, info, elapsed = transcribe_audio(
-                    model,
-                    mp3_path,
-                    transcription_options,
-                    log
-                )
+                # Let the while loop retry with the new CPU model
+                continue
 
             # If transcribe_audio returned None (e.g. skipped due to size), continue to next file
             if text is None:
