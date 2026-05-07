@@ -1,23 +1,18 @@
 import json
 import os
 from hashlib import md5
-
-import requests
-from bs4 import BeautifulSoup
-
 from config import METADATA_FILE, MP3_DIR, ensure_data_dirs
-
 
 ensure_data_dirs()
 
-session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0"})
-
-episodes = []
-
-
 def ingest_rss(rss_url):
-    episodes.clear()
+    import requests
+    from bs4 import BeautifulSoup
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0"})
+
+    episodes = []
 
     response = session.get(rss_url, timeout=30)
     response.raise_for_status()
@@ -49,12 +44,16 @@ def ingest_rss(rss_url):
 
     with open(METADATA_FILE, "w", encoding="utf-8") as f:
         json.dump(episodes, f, ensure_ascii=False, indent=2)
+    return episodes
 
+def run_downloads(episode_list, log=None):
+    import requests
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0"})
+    
+    total = len(episode_list)
 
-def run_downloads(log=None):
-    total = len(episodes)
-
-    for i, episode in enumerate(episodes, start=1):
+    for i, episode in enumerate(episode_list, start=1):
         path = os.path.join(MP3_DIR, episode["file"])
 
         if os.path.exists(path):

@@ -44,21 +44,21 @@ def run_pipeline(rss_url):
     try:
         ensure_data_dirs()
 
-        from downloader import episodes, ingest_rss, run_downloads
+        from downloader import ingest_rss, run_downloads
         from main import zip_and_cleanup
         from transcriber import run_transcriptions
 
         log("state:fetch_rss")
-        ingest_rss(rss_url)
+        episode_list = ingest_rss(rss_url)
 
-        total = len(episodes)
+        total = len(episode_list)
         log(f"total_episodes:{total}")
 
         log("state:downloading")
-        run_downloads(log)
+        run_downloads(episode_list, log)
 
         log("state:transcribing")
-        run_transcriptions(log)
+        run_transcriptions(episode_list, log)
 
         log("state:zipping")
         zip_and_cleanup(log)
@@ -110,6 +110,10 @@ def home():
                     if (event.data === "__keepalive__") return;
                     box.textContent += event.data + "\\n";
                     box.scrollTop = box.scrollHeight;
+                    
+                    if (event.data === "state:done" || event.data.startsWith("state:error")) {
+                        source.close();
+                    }
                 };
             </script>
         </body>
@@ -144,14 +148,24 @@ def stream():
                 for i in range(last, len(LOG)):
                     yield f"data: {LOG[i]}\n\n"
                 last = len(LOG)
+            
+            # Detect if thread died without setting state:done
+            if not is_job_running() and last >= len(LOG):
+                if "state:done" not in LOG and "state:error" not in LOG:
+                    yield "data: Error: The background process crashed (likely Out of Memory).\n\n"
+                break
+
             else:
                 yield "data: __keepalive__\n\n"
 
             time.sleep(1)
-
-    return Response(generate(), mimetype="text/event-stream")
-
-
+            
+    response = Response(generate(), mimetype="text/event-stream")
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'  # Disables buffering on Nginx/Koyeb
+    response.headers['Connection'] = 'keep-alive'
+    return response
+    
 @app.route("/download")
 def download():
     if os.path.exists(ZIP_PATH):

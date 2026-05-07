@@ -2,6 +2,7 @@ import json
 import os
 import re
 import site
+import requests
 import time
 
 from config import BASE_OUTPUT, METADATA_FILE, MP3_DIR, TXT_DIR, ensure_data_dirs
@@ -37,10 +38,6 @@ def add_nvidia_dll_directories():
 
 
 add_nvidia_dll_directories()
-
-import ctranslate2
-from faster_whisper import BatchedInferencePipeline, WhisperModel
-
 
 ensure_data_dirs()
 
@@ -97,6 +94,7 @@ def detect_device():
     if forced_device:
         return forced_device.strip().lower()
 
+    import ctranslate2
     try:
         if ctranslate2.get_cuda_device_count() > 0:
             return "cuda"
@@ -106,9 +104,9 @@ def detect_device():
 
 
 def default_model_for(device):
-    # large-v3 is the accuracy-first default on GPU. On CPU it is usually too
+    # large-v3-turbo is the best speed/accuracy balance on GPU. On CPU it is usually too
     # slow for a whole podcast archive, so medium is the practical default.
-    return "large-v3" if device == "cuda" else "medium"
+    return "large-v3-turbo" if device == "cuda" else "tiny.en"
 
 
 def log_message(message, log=None):
@@ -134,13 +132,17 @@ def cuda_runtime_error(error):
 
 
 def load_transcription_model(log=None, device_override=None):
+    # Lazy import to save RAM on cloud environments
+    from faster_whisper import BatchedInferencePipeline, WhisperModel
+
     device = device_override or detect_device()
     model_name = os.getenv("WHISPER_MODEL", default_model_for(device))
     compute_type = os.getenv("WHISPER_COMPUTE_TYPE") or (
         "float16" if device == "cuda" else "int8"
     )
-    cpu_threads = env_int("WHISPER_CPU_THREADS", max(1, os.cpu_count() or 1))
+    cpu_threads = env_int("WHISPER_CPU_THREADS", 1) # Reduce threads to save memory overhead
     num_workers = env_int("WHISPER_NUM_WORKERS", 1)
+    use_flash_attention = env_bool("WHISPER_FLASH_ATTENTION", device == "cuda")
 
     load_attempts = [(device, compute_type)]
     if device == "cuda" and compute_type != "int8_float16":
@@ -165,6 +167,7 @@ def load_transcription_model(log=None, device_override=None):
                 compute_type=attempt_compute_type,
                 cpu_threads=cpu_threads,
                 num_workers=num_workers,
+                flash_attention=use_flash_attention,
             )
             return BatchedInferencePipeline(model=model), attempt_device
         except Exception as e:
@@ -175,6 +178,39 @@ def load_transcription_model(log=None, device_override=None):
 
 
 def transcribe_audio(model, mp3_path, options):
+    api_key = os.getenv("GROQ_API_KEY")
+    if api_key:
+        print(f"Sending {os.path.basename(mp3_path)} to Groq API...")
+        started = time.perf_counter()
+        url = "https://api.groq.com/openai/v1/audio/transcriptions"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        try:
+            with open(mp3_path, "rb") as f:
+                files = {
+                    "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
+                    "model": (None, "whisper-large-v3"),
+                    "language": (None, options.get("language", "en")),
+                    "response_format": (None, "json"),
+                }
+                # Groq is extremely fast; a 300s timeout is more than enough for large files
+                response = requests.post(url, headers=headers, files=files, timeout=300)
+                response.raise_for_status()
+        except Exception as e:
+            # Fallback to local if API fails and model is loaded, otherwise re-raise
+            if model is None:
+                raise RuntimeError(f"Groq API failed and no local model loaded: {e}")
+            print(f"Groq API failed, falling back to local: {e}")
+        else:
+            result = response.json()
+            text = result.get("text", "")
+            elapsed = time.perf_counter() - started
+            
+            # Create a mock info object that looks like the faster-whisper output
+            # This prevents errors when the code tries to read info.language or info.duration
+            info = type('obj', (object,), {'duration': 0, 'language': options.get("language") or "en"})
+            return text, info, elapsed
+
     started = time.perf_counter()
     segments, info = model.transcribe(mp3_path, **options)
     text = "".join(segment.text for segment in segments).strip()
@@ -197,22 +233,20 @@ def get_episode_files():
     return files_with_metadata
 
 
-def run_transcriptions(log=None):
+def run_transcriptions(episode_list=None, log=None):
     language = os.getenv("WHISPER_LANGUAGE", "it")
-    beam_size = env_int("WHISPER_BEAM_SIZE", 5)
+    beam_size = env_int("WHISPER_BEAM_SIZE", 1)
     batch_size = env_int("WHISPER_BATCH_SIZE", 16)
     vad_filter = env_bool("WHISPER_VAD_FILTER", True)
-    condition_on_previous_text = env_bool("WHISPER_CONDITION_PREVIOUS", True)
-    initial_prompt = os.getenv("WHISPER_INITIAL_PROMPT") or None
-    hotwords = os.getenv("WHISPER_HOTWORDS") or None
+    
     transcription_options = {
         "language": language,
         "beam_size": beam_size,
         "batch_size": batch_size,
         "temperature": 0.0,
-        "condition_on_previous_text": condition_on_previous_text,
-        "initial_prompt": initial_prompt,
-        "hotwords": hotwords,
+        "condition_on_previous_text": env_bool("WHISPER_CONDITION_PREVIOUS", True),
+        "initial_prompt": os.getenv("WHISPER_INITIAL_PROMPT"),
+        "hotwords": os.getenv("WHISPER_HOTWORDS"),
         "vad_filter": vad_filter,
         "vad_parameters": {
             "min_silence_duration_ms": 500,
@@ -221,15 +255,26 @@ def run_transcriptions(log=None):
         "hallucination_silence_threshold": 2.0,
     }
 
-    model, device = load_transcription_model(log)
-    files = get_episode_files()
-    total = len(files)
+    api_key = os.getenv("GROQ_API_KEY")
+    model = None
+    device = "Groq API"
+    if not api_key:
+        model, device = load_transcription_model(log)
+
+    # Use provided list or fall back to directory scanning
+    if episode_list:
+        files_to_process = [(ep["file"], ep.get("episode_number", i), ep) 
+                           for i, ep in enumerate(episode_list)]
+    else:
+        files_to_process = get_episode_files()
+        
+    total = len(files_to_process)
 
     if total == 0:
         log_message("No MP3 files found to transcribe", log)
         return
 
-    for i, (file, episode_num, episode_data) in enumerate(files, start=1):
+    for i, (file, episode_num, episode_data) in enumerate(files_to_process, start=1):
         title = episode_data.get("title", file.replace(".mp3", ""))
         safe_filename = sanitize_filename(title)
 
