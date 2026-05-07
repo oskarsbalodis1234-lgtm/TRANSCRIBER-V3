@@ -151,8 +151,9 @@ def reset():
     from config import MP3_DIR, TXT_DIR, METADATA_FILE, BASE_OUTPUT
 
     try:
-        # 1. Clear memory logs
-        LOG.clear()
+        # 1. Clear database content (safer than deleting the file while connected)
+        from db import clear_db
+        clear_db()
 
         # 2. Delete data folders
         for folder in [MP3_DIR, TXT_DIR]:
@@ -162,16 +163,16 @@ def reset():
         # 3. Delete metadata and zip files
         for file_path in [METADATA_FILE, ZIP_PATH]:
             if os.path.exists(file_path):
-                os.remove(file_path)
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
 
-        # 4. Handle SQLite database if it exists
-        db_path = os.path.join(BASE_OUTPUT, "episodes.db")
-        if os.path.exists(db_path):
-            os.remove(db_path)
-
-        # 5. Recreate clean directory structure
+        # 4. Recreate clean directory structure
         ensure_data_dirs()
-        
+
+        # 5. Clear memory logs last
+        LOG.clear()
         log("System reset: All files and logs cleared.")
         return "Success", 200
     except Exception as e:
@@ -185,6 +186,9 @@ def stream():
         last = 0
 
         while True:
+            if last > len(LOG): # Handle log reset/clear
+                last = 0
+
             if len(LOG) > last:
                 for i in range(last, len(LOG)):
                     yield f"data: {LOG[i]}\n\n"
@@ -192,7 +196,7 @@ def stream():
             
             # Detect if thread died without setting state:done
             if not is_job_running() and last >= len(LOG):
-                if "state:done" not in LOG and "state:error" not in LOG:
+                if len(LOG) > 0 and "state:done" not in LOG and "state:error" not in LOG:
                     yield "data: Error: The background process crashed (likely Out of Memory).\n\n"
                 break
 
