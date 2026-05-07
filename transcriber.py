@@ -192,6 +192,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
         
         max_retries = 8
         for attempt in range(max_retries):
+            api_start = time.perf_counter()
             try:
                 with open(mp3_path, "rb") as f:
                     files = {
@@ -213,7 +214,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
                     text = result.get("text", "")
                     duration = result.get("duration", 0)
                     detected_lang = result.get("language") or options.get("language") or "en"
-                    elapsed = time.perf_counter() - started
+                    elapsed = time.perf_counter() - api_start
                     
                     # Create a mock info object that looks like the faster-whisper output
                     info = type('obj', (object,), {'duration': duration, 'language': detected_lang})
@@ -235,7 +236,11 @@ def transcribe_audio(model, mp3_path, options, log=None):
                             except (ValueError, TypeError):
                                 pass
 
-                    log_message(f"Groq busy or error ({status_code}). Retrying in {wait_time}s...", log)
+                    if status_code == 429:
+                        log_message(f"Groq Rate Limit (429): Token quota likely exhausted. Retrying in {wait_time:.1f}s...", log)
+                    else:
+                        log_message(f"Groq busy or error ({status_code}). Retrying in {wait_time:.1f}s...", log)
+
                     time.sleep(wait_time)
                     continue
                 
@@ -343,7 +348,7 @@ def run_transcriptions(episode_list=None, log=None):
                 # Pacing: Groq Free Tier typically allows ~3 RPM (1 request every 20s).
                 # We subtract the 'elapsed' time already spent on this request to maximize speed.
                 if device == "Groq API" and text is not None:
-                    pacing_delay = 25  # Optimized for 3 RPM (60s / 3 = 20s)
+                    pacing_delay = 50  # More conservative to avoid huge TPM "penalty box" waits
                     remaining_wait = max(0, pacing_delay - elapsed)
                     if remaining_wait > 0:
                         log_message(f"Pacing: waiting {remaining_wait:.1f}s to avoid Groq rate limit...", log)
