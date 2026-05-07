@@ -222,8 +222,8 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 
                 # Retry on Rate Limit (429) or Server Errors (502, 503, 504)
                 if status_code in [429, 502, 503, 504] and attempt < max_retries - 1:
-                    # Exponential backoff with jitter: 15s, 30s, 60s...
-                    wait_time = (2 ** attempt) * 15 + random.uniform(0, 5)
+                    # Aggressive exponential backoff for Free Tier: 20s, 40s, 80s...
+                    wait_time = (2 ** attempt) * 20 + random.uniform(0, 5)
                     log_message(f"Groq busy or error ({status_code}). Retrying in {wait_time}s...", log)
                     time.sleep(wait_time)
                     continue
@@ -331,9 +331,10 @@ def run_transcriptions(episode_list=None, log=None):
                 # Pacing: Groq Free Tier typically allows ~3 RPM (1 request every 20s).
                 # We subtract the 'elapsed' time already spent on this request to maximize speed.
                 if device == "Groq API" and text is not None:
-                    pacing_delay = 20
+                    pacing_delay = 35
                     remaining_wait = max(0, pacing_delay - elapsed)
                     if remaining_wait > 0:
+                        log_message(f"Pacing: waiting {remaining_wait:.1f}s to avoid Groq rate limit...", log)
                         time.sleep(remaining_wait)
 
             except Exception as e:
