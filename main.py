@@ -1,7 +1,8 @@
 import os
 import zipfile
+import shutil
 
-from config import BASE_OUTPUT, METADATA_FILE, TXT_DIR, ZIP_PATH, ensure_data_dirs
+from config import BASE_OUTPUT, METADATA_FILE, MP3_DIR, TXT_DIR, ZIP_PATH, ensure_data_dirs
 
 
 def log_message(message, log=None):
@@ -48,3 +49,12 @@ def zip_and_cleanup(log=None):
         log("ZIP contents (first 20 files):")
         for file in files_added[:20]:
             log(f" - {file}")
+
+    # Cleanup MP3s to save space on Koyeb
+    if os.path.exists(MP3_DIR):
+        try:
+            shutil.rmtree(MP3_DIR)
+            os.makedirs(MP3_DIR, exist_ok=True)
+            log_message("Cleaned up MP3 directory to save disk space.", log)
+        except Exception as e:
+            log_message(f"Cleanup failed: {str(e)}", log)

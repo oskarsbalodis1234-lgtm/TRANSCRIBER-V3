@@ -2,7 +2,6 @@ import json
 import os
 import re
 import site
-import requests
 import time
 
 from config import BASE_OUTPUT, METADATA_FILE, MP3_DIR, TXT_DIR, ensure_data_dirs
@@ -177,31 +176,55 @@ def load_transcription_model(log=None, device_override=None):
     raise RuntimeError(f"Could not load Whisper model: {last_error}")
 
 
-def transcribe_audio(model, mp3_path, options):
-    api_key = os.getenv("GROQ_API_KEY")
+def transcribe_audio(model, mp3_path, options, log=None):
+    import requests
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+
     if api_key:
-        print(f"Sending {os.path.basename(mp3_path)} to Groq API...")
+        file_size = os.path.getsize(mp3_path)
+        if file_size > 25 * 1024 * 1024:
+            log_message(f"Warning: {os.path.basename(mp3_path)} is {file_size/(1024*1024):.1f}MB. Groq limit is 25MB.", log)
+
         started = time.perf_counter()
         url = "https://api.groq.com/openai/v1/audio/transcriptions"
         headers = {"Authorization": f"Bearer {api_key}"}
         
-        try:
-            with open(mp3_path, "rb") as f:
-                files = {
-                    "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
-                    "model": (None, "whisper-large-v3"),
-                    "language": (None, options.get("language", "en")),
-                    "response_format": (None, "json"),
-                }
-                # Groq is extremely fast; a 300s timeout is more than enough for large files
-                response = requests.post(url, headers=headers, files=files, timeout=300)
-                response.raise_for_status()
-        except Exception as e:
-            # Fallback to local if API fails and model is loaded, otherwise re-raise
-            if model is None:
-                raise RuntimeError(f"Groq API failed and no local model loaded: {e}")
-            print(f"Groq API failed, falling back to local: {e}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with open(mp3_path, "rb") as f:
+                    files = {
+                        "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
+                        "model": (None, "whisper-large-v3"),
+                        "language": (None, options.get("language", "en")),
+                        "response_format": (None, "json"),
+                    }
+                    log_message(f"Sending {os.path.basename(mp3_path)} to Groq (Attempt {attempt + 1})...", log)
+                    response = requests.post(url, headers=headers, files=files, timeout=300)
+                    
+                    if response.status_code == 413:
+                        log_message(f"Error: {os.path.basename(mp3_path)} is too large for Groq (Max 25MB). Skipping.", log)
+                        return None, None, 0
+                    
+                    response.raise_for_status()
+                    break # Success
+            except Exception as e:
+                status_code = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
+                
+                # Retry on Rate Limit (429) or Server Errors (502, 503, 504)
+                if status_code in [429, 502, 503, 504] and attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 10 # 10s, 20s...
+                    log_message(f"Groq busy or error ({status_code}). Retrying in {wait_time}s...", log)
+                    time.sleep(wait_time)
+                    continue
+                
+                if model is None:
+                    raise RuntimeError(f"Groq API failed: {e}")
+                log_message(f"Groq API failed, falling back to local: {e}", log)
+                # Break out of retry loop to hit local transcription logic below
+                break
         else:
+            # Fallback to local if API fails and model is loaded, otherwise re-raise
             result = response.json()
             text = result.get("text", "")
             elapsed = time.perf_counter() - started
@@ -255,10 +278,13 @@ def run_transcriptions(episode_list=None, log=None):
         "hallucination_silence_threshold": 2.0,
     }
 
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
     model = None
-    device = "Groq API"
-    if not api_key:
+    if api_key:
+        device = "Groq API"
+        log_message("Groq API key detected. Using remote transcription.", log)
+    else:
+        log_message("No Groq API key found. Falling back to local model (CPU/GPU).", log)
         model, device = load_transcription_model(log)
 
     # Use provided list or fall back to directory scanning
@@ -299,6 +325,7 @@ def run_transcriptions(episode_list=None, log=None):
                     model,
                     mp3_path,
                     transcription_options,
+                    log
                 )
             except Exception as e:
                 if device != "cuda" or not cuda_runtime_error(e):
@@ -316,7 +343,12 @@ def run_transcriptions(episode_list=None, log=None):
                     model,
                     mp3_path,
                     transcription_options,
+                    log
                 )
+
+            # If transcribe_audio returned None (e.g. skipped due to size), continue to next file
+            if text is None:
+                continue
 
             tmp_path = txt_path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
