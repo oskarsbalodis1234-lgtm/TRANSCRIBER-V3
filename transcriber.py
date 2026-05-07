@@ -340,7 +340,7 @@ def run_transcriptions(episode_list=None, log=None):
                 
                 # Add a proactive delay for Groq API to avoid hitting Rate Limits (RPM)
                 if device == "Groq API" and text is not None:
-                    time.sleep(25)
+                    time.sleep(35)
 
             except Exception as e:
                 if device != "cuda" or not cuda_runtime_error(e):
