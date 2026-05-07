@@ -233,16 +233,6 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 log_message(f"Groq API failed, falling back to local: {e}", log)
                 # Break out of retry loop to hit local transcription logic below
                 break
-        else:
-            # Fallback to local if API fails and model is loaded, otherwise re-raise
-            result = response.json()
-            text = result.get("text", "")
-            elapsed = time.perf_counter() - started
-            
-            # Create a mock info object that looks like the faster-whisper output
-            # This prevents errors when the code tries to read info.language or info.duration
-            info = type('obj', (object,), {'duration': 0, 'language': options.get("language") or "en"})
-            return text, info, elapsed
 
     started = time.perf_counter()
     segments, info = model.transcribe(mp3_path, **options)
@@ -314,7 +304,7 @@ def run_transcriptions(episode_list=None, log=None):
         title = episode_data.get("title", file.replace(".mp3", ""))
         safe_filename = sanitize_filename(title)
 
-        log_message(f"Transcribe {i}/{total}: {title}", log)
+        log_message(f"[{i}/{total}] Processing: {title}", log)
 
         mp3_path = os.path.join(MP3_DIR, file)
         txt_path = os.path.join(TXT_DIR, f"{episode_num}_{safe_filename}.txt")
@@ -338,9 +328,13 @@ def run_transcriptions(episode_list=None, log=None):
                     log
                 )
                 
-                # Add a proactive delay for Groq API to avoid hitting Rate Limits (RPM)
+                # Pacing: Groq Free Tier typically allows ~3 RPM (1 request every 20s).
+                # We subtract the 'elapsed' time already spent on this request to maximize speed.
                 if device == "Groq API" and text is not None:
-                    time.sleep(35)
+                    pacing_delay = 20
+                    remaining_wait = max(0, pacing_delay - elapsed)
+                    if remaining_wait > 0:
+                        time.sleep(remaining_wait)
 
             except Exception as e:
                 if device != "cuda" or not cuda_runtime_error(e):

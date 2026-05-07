@@ -46,28 +46,34 @@ def ingest_rss(rss_url):
         json.dump(episodes, f, ensure_ascii=False, indent=2)
     return episodes
 
+def download_episode(args):
+    episode, i, total, session, log = args
+    path = os.path.join(MP3_DIR, episode["file"])
+
+    if os.path.exists(path):
+        return
+
+    msg = f"Download {i}/{total}: {episode['title']}"
+    print(msg, flush=True)
+    if log:
+        log(msg)
+
+    with session.get(episode["url"], stream=True, timeout=60) as response:
+        response.raise_for_status()
+        with open(path, "wb") as f:
+            for chunk in response.iter_content(1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+
 def run_downloads(episode_list, log=None):
+    import concurrent.futures
     import requests
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0"})
     
     total = len(episode_list)
-
-    for i, episode in enumerate(episode_list, start=1):
-        path = os.path.join(MP3_DIR, episode["file"])
-
-        if os.path.exists(path):
-            continue
-
-        msg = f"Download {i}/{total}: {episode['title']}"
-        print(msg, flush=True)
-
-        if log:
-            log(msg)
-
-        with session.get(episode["url"], stream=True, timeout=60) as response:
-            response.raise_for_status()
-            with open(path, "wb") as f:
-                for chunk in response.iter_content(1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
+    
+    # Download up to 4 episodes at once to speed up the process on Koyeb
+    download_tasks = [(ep, i, total, session, log) for i, ep in enumerate(episode_list, start=1)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(download_episode, download_tasks))
