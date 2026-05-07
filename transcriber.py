@@ -200,7 +200,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
                     "smart_format": True,
                     "language": options.get("language", "it")
                 }
-                response = deepgram.listen.v1.media.transcribe_file(source, dg_options, timeout=300)
+                response = deepgram.listen.v1.media.transcribe_file(source, dg_options)
 
             text = response.results.channels[0].alternatives[0].transcript
             duration = response.metadata.duration
