@@ -113,11 +113,15 @@ def home():
                     if (event.data === "__keepalive__") return;
                     
                     // Svuota il box se riceve il segnale di inizio o di reset avvenuto
-                    if (event.data === "state:starting_pipeline" || event.data.includes("System reset")) {
+                    if (event.data === "state:starting_pipeline" || event.data === "state:reset_complete") {
                         box.textContent = "";
                     }
 
-                    box.textContent += event.data + "\\n";
+                    if (!event.data.startsWith("state:")) {
+                        box.textContent += event.data + "\\n";
+                    } else {
+                        box.textContent += "--- " + event.data + " ---\\n";
+                    }
                     box.scrollTop = box.scrollHeight;
                     
                     if (event.data === "state:done" || event.data.startsWith("state:error")) {
@@ -129,11 +133,13 @@ def home():
 
                 document.getElementById("runForm").onsubmit = function(e) {
                     e.preventDefault();
-                    box.textContent = ""; 
-                    const rss = this.querySelector('input').value;
+                    const input = this.querySelector('input');
+                    const rss = input.value;
                     fetch(`/run?rss=${encodeURIComponent(rss)}`).then(r => {
                         if (r.status === 409) alert("Job already running");
-                        else if (source.readyState === 2) {
+                        else {
+                            box.textContent = ""; // Visual clear immediately
+                            if (source.readyState === 2) {
                             source = new EventSource("/stream");
                             source.onmessage = handleMessage;
                         }
@@ -200,8 +206,8 @@ def reset():
         # 5. Clear memory logs last
         with LOG_LOCK:
             LOG.clear()
-        log("System reset: All files and logs cleared.")
-        return "Success", 200
+            LOG.append("state:reset_complete")
+        return "Reset Successful", 200
     except Exception as e:
         log(f"Reset failed: {str(e)}")
         return f"Error: {str(e)}", 500
@@ -213,23 +219,26 @@ def stream():
         last = 0
 
         while True:
+            running = is_job_running()
+            
             with LOG_LOCK:
                 if last > len(LOG): # Handle log reset/clear
                     last = 0
 
-                current_logs = []
+                new_entries = []
                 if len(LOG) > last:
-                    current_logs = LOG[last:]
+                    new_entries = list(LOG[last:])
                     last = len(LOG)
 
-            for entry in current_logs:
+            for entry in new_entries:
                 for line in str(entry).splitlines():
                     yield f"data: {line}\n\n"
 
-            if not is_job_running() and last >= len(LOG):
-                if len(LOG) > 0 and "state:done" not in LOG and "state:error" not in LOG:
-                    yield "data: Error: The background process crashed (likely Out of Memory).\n\n"
-                break
+            # Crash detection: Job stopped but no completion signal found in logs
+            if not running and last > 0:
+                terminal_signals = ("state:done", "state:error", "state:reset_complete")
+                if not any(sig in str(LOG[-1]) for sig in terminal_signals):
+                    yield "data: Error: The process stopped unexpectedly (Check Server RAM).\n\n"
 
             yield "data: __keepalive__\n\n"
 
