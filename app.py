@@ -99,10 +99,13 @@ def home():
                 <button type="submit">Start</button>
             </form>
 
-            <p><a class="button" href="/download">Download ZIP</a></p>
+            <p>
+                <a class="button" href="/download">Download ZIP</a>
+                <button onclick="if(confirm('Clear all logs and transcripts?')) fetch('/reset').then(() => location.reload())" style="margin-left: 10px; color: #ff4444; background: none; border: 1px solid #ff4444; border-radius: 4px; cursor: pointer;">Reset System</button>
+            </p>
             <pre id="logbox"></pre>
 
-            <script>
+            <script {%- if is_job_running() %} data-running="true" {% endif -%}>
                 const box = document.getElementById("logbox");
                 const source = new EventSource("/stream");
 
@@ -136,6 +139,43 @@ def run():
     thread.start()
 
     return "Running..."
+
+
+@app.route("/reset")
+def reset():
+    if is_job_running():
+        return "Cannot reset while a job is running", 409
+
+    import shutil
+    from config import MP3_DIR, TXT_DIR, METADATA_FILE, BASE_OUTPUT
+
+    try:
+        # 1. Clear memory logs
+        LOG.clear()
+
+        # 2. Delete data folders
+        for folder in [MP3_DIR, TXT_DIR]:
+            if os.path.exists(folder):
+                shutil.rmtree(folder)
+        
+        # 3. Delete metadata and zip files
+        for file_path in [METADATA_FILE, ZIP_PATH]:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+        # 4. Handle SQLite database if it exists
+        db_path = os.path.join(BASE_OUTPUT, "episodes.db")
+        if os.path.exists(db_path):
+            os.remove(db_path)
+
+        # 5. Recreate clean directory structure
+        ensure_data_dirs()
+        
+        log("System reset: All files and logs cleared.")
+        return "Success", 200
+    except Exception as e:
+        log(f"Reset failed: {str(e)}")
+        return f"Error: {str(e)}", 500
 
 
 @app.route("/stream")
