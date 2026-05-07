@@ -47,8 +47,11 @@ def ingest_rss(rss_url):
     return episodes
 
 def download_episode(args):
-    episode, i, total, session, log = args
+    episode, i, total, session, log, check_cancel = args
     path = os.path.join(MP3_DIR, episode["file"])
+
+    if check_cancel and check_cancel():
+        return
 
     if os.path.exists(path):
         return
@@ -65,7 +68,7 @@ def download_episode(args):
                 if chunk:
                     f.write(chunk)
 
-def run_downloads(episode_list, log=None):
+def run_downloads(episode_list, log=None, check_cancel=None):
     import concurrent.futures
     import requests
     session = requests.Session()
@@ -74,6 +77,6 @@ def run_downloads(episode_list, log=None):
     total = len(episode_list)
     
     # Download 2 episodes at once to save memory on Koyeb Free Tier
-    download_tasks = [(ep, i, total, session, log) for i, ep in enumerate(episode_list, start=1)]
+    download_tasks = [(ep, i, total, session, log, check_cancel) for i, ep in enumerate(episode_list, start=1)]
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         list(executor.map(download_episode, download_tasks))

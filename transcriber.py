@@ -309,7 +309,7 @@ def get_episode_files():
     return files_with_metadata
 
 
-def run_transcriptions(episode_list=None, log=None):
+def run_transcriptions(episode_list=None, log=None, check_cancel=None):
     language = os.getenv("WHISPER_LANGUAGE", "it")
     beam_size = env_int("WHISPER_BEAM_SIZE", 1)
     batch_size = env_int("WHISPER_BATCH_SIZE", 16)
@@ -358,6 +358,10 @@ def run_transcriptions(episode_list=None, log=None):
         return
 
     for i, (file, episode_num, episode_data) in enumerate(files_to_process, start=1):
+        if check_cancel and check_cancel():
+            log_message("Transcription stopped by user.", log)
+            return
+
         title = episode_data.get("title", file.replace(".mp3", ""))
         safe_filename = sanitize_filename(title)
 

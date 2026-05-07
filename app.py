@@ -15,6 +15,19 @@ MAX_LOG_LINES = 1000
 LOG_LOCK = threading.Lock()
 JOB_LOCK = threading.Lock()
 JOB_RUNNING = False
+CANCEL_LOCK = threading.Lock()
+SHOULD_CANCEL = False
+
+
+def set_cancel(val):
+    global SHOULD_CANCEL
+    with CANCEL_LOCK:
+        SHOULD_CANCEL = val
+
+
+def is_cancelled():
+    with CANCEL_LOCK:
+        return SHOULD_CANCEL
 
 
 def log(msg):
@@ -43,21 +56,25 @@ def run_pipeline(rss_url):
 
     try:
         ensure_data_dirs()
+        set_cancel(False)
 
         log("state:fetch_rss")
         from downloader import ingest_rss
         episode_list = ingest_rss(rss_url)
+        if is_cancelled(): return
 
         total = len(episode_list)
         log(f"total_episodes:{total}")
 
         log("state:downloading")
         from downloader import run_downloads
-        run_downloads(episode_list, log)
+        run_downloads(episode_list, log, is_cancelled)
+        if is_cancelled(): return
 
         log("state:transcribing")
         from transcriber import run_transcriptions
-        run_transcriptions(episode_list, log)
+        run_transcriptions(episode_list, log, is_cancelled)
+        if is_cancelled(): return
 
         log("state:zipping")
         from main import zip_and_cleanup
@@ -178,7 +195,7 @@ def run():
 @app.route("/reset")
 def reset():
     if is_job_running():
-        return "Cannot reset while a job is running", 409
+        set_cancel(True)
 
     import shutil
     from config import MP3_DIR, TXT_DIR, METADATA_FILE, BASE_OUTPUT
@@ -191,7 +208,10 @@ def reset():
         # 2. Delete data folders
         for folder in [MP3_DIR, TXT_DIR]:
             if os.path.exists(folder):
-                shutil.rmtree(folder)
+                try:
+                    shutil.rmtree(folder)
+                except:
+                    pass
         
         # 3. Delete metadata and zip files
         for file_path in [METADATA_FILE, ZIP_PATH]:
