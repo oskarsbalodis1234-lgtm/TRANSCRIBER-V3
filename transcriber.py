@@ -189,7 +189,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
         url = "https://api.groq.com/openai/v1/audio/transcriptions"
         headers = {"Authorization": f"Bearer {api_key}"}
         
-        max_retries = 3
+        max_retries = 5
         for attempt in range(max_retries):
             try:
                 with open(mp3_path, "rb") as f:
@@ -207,7 +207,15 @@ def transcribe_audio(model, mp3_path, options, log=None):
                         return None, None, 0
                     
                     response.raise_for_status()
-                    break # Success
+                    
+                    result = response.json()
+                    text = result.get("text", "")
+                    elapsed = time.perf_counter() - started
+                    
+                    # Create a mock info object that looks like the faster-whisper output
+                    info = type('obj', (object,), {'duration': 0, 'language': options.get("language") or "en"})
+                    return text, info, elapsed
+
             except Exception as e:
                 status_code = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
                 
@@ -327,6 +335,11 @@ def run_transcriptions(episode_list=None, log=None):
                     transcription_options,
                     log
                 )
+                
+                # Add a proactive delay for Groq API to avoid hitting Rate Limits (RPM)
+                if device == "Groq API" and text is not None:
+                    time.sleep(10)
+
             except Exception as e:
                 if device != "cuda" or not cuda_runtime_error(e):
                     raise
