@@ -177,7 +177,7 @@ def load_transcription_model(log=None, device_override=None):
     raise RuntimeError(f"Could not load Whisper model: {last_error}")
 
 
-def transcribe_audio(model, mp3_path, transcription_options, log=None):
+def transcribe_audio(model, mp3_path, options, log=None):
     import requests
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
@@ -188,28 +188,26 @@ def transcribe_audio(model, mp3_path, transcription_options, log=None):
     if deepgram_key:
         try:
             from deepgram import DeepgramClient
+            from deepgram.models.listen.v1 import PrerecordedOptions
             
             log_message(f"[{os.path.basename(mp3_path)}] Attempting Deepgram API...", log)
             started = time.perf_counter()
-            deepgram = DeepgramClient(api_key=deepgram_key)
+            deepgram = DeepgramClient(deepgram_key)
 
             with open(mp3_path, "rb") as audio:
-                # Reading to buffer ensures compatibility across SDK versions
-                source_payload = {"buffer": audio.read()}
-                
-                # Pass options as flat kwargs, matching your successful test script
-                response = deepgram.listen.v1.media.transcribe_file(
-                    source=source_payload,
+                source = {"buffer": audio}
+                dg_options = PrerecordedOptions(
                     model="nova-3",
                     smart_format=True,
-                    language=transcription_options.get("language", "it")
+                    language=options.get("language", "it")
                 )
+                response = deepgram.listen.v1.media.transcribe_file(source_payload, **dg_options)
 
             text = response.results.channels[0].alternatives[0].transcript
             duration = response.metadata.duration
             elapsed = time.perf_counter() - started
             
-            info = type('obj', (object,), {'duration': duration, 'language': transcription_options.get("language") or "it"})
+            info = type('obj', (object,), {'duration': duration, 'language': options.get("language") or "en"})
             return text, info, elapsed
         except Exception as e:
             last_error = f"Deepgram failed: {e}"
@@ -230,7 +228,7 @@ def transcribe_audio(model, mp3_path, transcription_options, log=None):
                 files = {
                     "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
                     "model": (None, "whisper-large-v3"),
-                    "language": (None, transcription_options.get("language", "it")),
+                    "language": (None, options.get("language", "en")),
                     "response_format": (None, "verbose_json"),
                 }
                 log_message(f"[{os.path.basename(mp3_path)}] Attempting Groq API...", log)
@@ -244,7 +242,7 @@ def transcribe_audio(model, mp3_path, transcription_options, log=None):
                     result = response.json()
                     text = result.get("text", "")
                     duration = result.get("duration", 0)
-                    detected_lang = result.get("language") or transcription_options.get("language") or "it"
+                    detected_lang = result.get("language") or options.get("language") or "en"
                     elapsed = time.perf_counter() - started
                     
                     # Create a mock info object that looks like the faster-whisper output
@@ -270,7 +268,7 @@ def transcribe_audio(model, mp3_path, transcription_options, log=None):
                     files = {
                         "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
                         "model": (None, "whisper-1"),
-                        "language": (None, transcription_options.get("language", "it")),
+                        "language": (None, options.get("language", "en")),
                     }
                     response = requests.post(url, headers=headers, files=files, timeout=300)
                     response.raise_for_status()
@@ -281,7 +279,7 @@ def transcribe_audio(model, mp3_path, transcription_options, log=None):
                 # we can estimate it if needed, but 0 is safe.
                 duration = 0 
                 elapsed = time.perf_counter() - started
-                info = type('obj', (object,), {'duration': duration, 'language': transcription_options.get("language") or "it"})
+                info = type('obj', (object,), {'duration': duration, 'language': options.get("language") or "en"})
                 return text, info, elapsed
         except Exception as e:
             last_error = f"OpenAI failed: {e}"
@@ -292,7 +290,7 @@ def transcribe_audio(model, mp3_path, transcription_options, log=None):
         raise RuntimeError(f"All transcription APIs failed: {last_error}")
 
     started = time.perf_counter()
-    segments, info = model.transcribe(mp3_path, **transcription_options)
+    segments, info = model.transcribe(mp3_path, **options)
     text = "".join(segment.text for segment in segments).strip()
     elapsed = time.perf_counter() - started
     return text, info, elapsed
