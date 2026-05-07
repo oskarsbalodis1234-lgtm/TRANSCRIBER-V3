@@ -140,8 +140,9 @@ def home():
                         else {
                             box.textContent = ""; // Visual clear immediately
                             if (source.readyState === 2) {
-                            source = new EventSource("/stream");
-                            source.onmessage = handleMessage;
+                                source = new EventSource("/stream");
+                                source.onmessage = handleMessage;
+                            }
                         }
                     });
                 };
