@@ -219,78 +219,35 @@ def transcribe_audio(model, mp3_path, options, log=None):
         started = time.perf_counter()
         url = "https://api.groq.com/openai/v1/audio/transcriptions"
         headers = {"Authorization": f"Bearer {groq_key}"}
-        
-        max_retries = 8
-        for attempt in range(max_retries):
-            api_start = time.perf_counter()
-            try:
-                with open(mp3_path, "rb") as f:
-                    files = {
-                        "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
-                        "model": (None, "whisper-large-v3"),
-                        "language": (None, options.get("language", "en")),
-                        "response_format": (None, "verbose_json"),
-                    }
-                    log_message(f"Sending {os.path.basename(mp3_path)} to Groq (Attempt {attempt + 1})...", log)
-                    response = requests.post(url, headers=headers, files=files, timeout=300)
-                    
-                    if response.status_code == 413:
-                        log_message(f"Error: {os.path.basename(mp3_path)} is too large for Groq (Max 25MB). Skipping.", log)
-                        break # Try next provider
-                    
+
+        try:
+            with open(mp3_path, "rb") as f:
+                files = {
+                    "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
+                    "model": (None, "whisper-large-v3"),
+                    "language": (None, options.get("language", "en")),
+                    "response_format": (None, "verbose_json"),
+                }
+                log_message(f"Sending {os.path.basename(mp3_path)} to Groq...", log)
+                response = requests.post(url, headers=headers, files=files, timeout=300)
+                
+                if response.status_code == 413:
+                    log_message(f"Error: {os.path.basename(mp3_path)} is too large for Groq (Max 25MB).", log)
+                else:
                     response.raise_for_status()
                     
                     result = response.json()
                     text = result.get("text", "")
                     duration = result.get("duration", 0)
                     detected_lang = result.get("language") or options.get("language") or "en"
-                    elapsed = time.perf_counter() - api_start
+                    elapsed = time.perf_counter() - started
                     
                     # Create a mock info object that looks like the faster-whisper output
                     info = type('obj', (object,), {'duration': duration, 'language': detected_lang})
                     return text, info, elapsed
 
-            except Exception as e:
-                status_code = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
-                
-                # Retry on Rate Limit (429) or Server Errors (502, 503, 504)
-                if status_code in [429, 502, 503, 504] and attempt < max_retries - 1:
-                    wait_time = (2 ** attempt) * 20 + random.uniform(0, 5)
-                    
-                    # Try to respect Groq's Retry-After header if available
-                    if hasattr(e, 'response') and e.response is not None:
-                        retry_after = e.response.headers.get("Retry-After")
-                        if retry_after:
-                            try:
-                                wait_time = float(retry_after) + random.uniform(0, 1)
-                            except (ValueError, TypeError):
-                                pass
-
-                    if status_code == 429:
-                        try:
-                            resp_json = e.response.json()
-                            error_details = resp_json.get("error", {}).get("message", "Quota exhausted")
-                            # Check if it's the specific ASPH limit
-                            if "seconds of audio per hour" in error_details.lower():
-                                log_message("Groq Limit: Hourly audio duration limit reached (ASPH).", log)
-                            
-                            log_message(f"Groq Rate Limit: {error_details}. Wait time: {wait_time:.1f}s", log)
-                        except Exception:
-                            log_message(f"Groq Rate Limit (429): Quota exhausted. Wait time: {wait_time:.1f}s", log)
-                        
-                        if openai_key and wait_time > 30:
-                            log_message("Wait time too long for Groq. Trying OpenAI...", log)
-                            break
-
-                        log_message(f"Retrying Groq in {wait_time:.1f}s...", log)
-                    else:
-                        log_message(f"Groq busy or error ({status_code}). Retrying in {wait_time:.1f}s...", log)
-
-                    time.sleep(wait_time)
-                    continue
-                
-                log_message(f"Groq API failed: {e}", log)
-                break
+        except Exception as e:
+            log_message(f"Groq API failed: {e}", log)
 
     # 3. Try OpenAI (Very accurate, paid but reliable)
     if openai_key:
