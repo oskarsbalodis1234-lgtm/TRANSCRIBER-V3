@@ -376,6 +376,7 @@ def run_transcriptions(episode_list=None, log=None):
             log_message(f"Already transcribed: {safe_filename}", log)
             continue
 
+        text = None
         success = False
         attempts = 0
         while not success and attempts < 3:

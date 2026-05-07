@@ -121,7 +121,8 @@ def home():
             </script>
         </body>
         </html>
-        """
+        """,
+        is_job_running=is_job_running
     )
 
 
