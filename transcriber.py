@@ -186,9 +186,9 @@ def transcribe_audio(model, mp3_path, options, log=None):
     # 1. Try Deepgram SDK (Nova-3)
     if deepgram_key:
         try:
-            from deepgram import DeepgramClient, PrerecordedOptions, FileSource
+            from deepgram import DeepgramClient, PrerecordedOptions
             
-            log_message(f"Sending {os.path.basename(mp3_path)} to Deepgram...", log)
+            log_message(f"[{os.path.basename(mp3_path)}] Attempting Deepgram API...", log)
             started = time.perf_counter()
             deepgram = DeepgramClient(deepgram_key)
 
@@ -197,7 +197,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 dg_options = PrerecordedOptions(
                     model="nova-3",
                     smart_format=True,
-                    language=options.get("language", "en")
+                    language=options.get("language", "it")
                 )
                 response = deepgram.listen.rest.v("1").transcribe_file(source, dg_options, timeout=300)
 
@@ -208,7 +208,9 @@ def transcribe_audio(model, mp3_path, options, log=None):
             info = type('obj', (object,), {'duration': duration, 'language': options.get("language") or "en"})
             return text, info, elapsed
         except Exception as e:
-            log_message(f"Deepgram API failed: {e}", log)
+            log_message(f"Deepgram failed: {e}", log)
+    else:
+        log_message("Deepgram: No API key found, skipping.", log)
 
     # 2. Try Groq (Fast & Free, but strict hourly limits)
     if groq_key:
@@ -228,7 +230,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
                     "language": (None, options.get("language", "en")),
                     "response_format": (None, "verbose_json"),
                 }
-                log_message(f"Sending {os.path.basename(mp3_path)} to Groq...", log)
+                log_message(f"[{os.path.basename(mp3_path)}] Attempting Groq API...", log)
                 response = requests.post(url, headers=headers, files=files, timeout=300)
                 
                 if response.status_code == 413:
@@ -247,7 +249,9 @@ def transcribe_audio(model, mp3_path, options, log=None):
                     return text, info, elapsed
 
         except Exception as e:
-            log_message(f"Groq API failed: {e}", log)
+            log_message(f"Groq failed: {e}", log)
+    else:
+        log_message("Groq: No API key found, skipping.", log)
 
     # 3. Try OpenAI (Very accurate, paid but reliable)
     if openai_key:
@@ -256,7 +260,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
             if file_size > 25 * 1024 * 1024:
                 log_message(f"OpenAI error: {os.path.basename(mp3_path)} exceeds 25MB limit.", log)
             else:
-                log_message(f"Sending {os.path.basename(mp3_path)} to OpenAI...", log)
+                log_message(f"[{os.path.basename(mp3_path)}] Attempting OpenAI API...", log)
                 started = time.perf_counter()
                 url = "https://api.openai.com/v1/audio/transcriptions"
                 headers = {"Authorization": f"Bearer {openai_key}"}
@@ -278,11 +282,13 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 info = type('obj', (object,), {'duration': duration, 'language': options.get("language") or "en"})
                 return text, info, elapsed
         except Exception as e:
-            log_message(f"OpenAI API failed: {e}", log)
+            log_message(f"OpenAI failed: {e}", log)
+    else:
+        log_message("OpenAI: No API key found, skipping.", log)
 
     # This point is only reached if all APIs failed or were skipped
     if model is None:
-        raise RuntimeError("All transcription APIs failed and no local model is loaded.")
+        raise RuntimeError("No working API providers available and local model is disabled.")
 
     started = time.perf_counter()
     segments, info = model.transcribe(mp3_path, **options)
@@ -328,13 +334,17 @@ def run_transcriptions(episode_list=None, log=None):
         "hallucination_silence_threshold": 2.0,
     }
 
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+
     model = None
-    if api_key:
-        device = "Groq API"
-        log_message("Groq API key detected. Using remote transcription.", log)
+    if groq_key or deepgram_key or openai_key:
+        device = "API Cluster"
+        active = [p for p, k in [("Deepgram", deepgram_key), ("Groq", groq_key), ("OpenAI", openai_key)] if k]
+        log_message(f"Active APIs: {', '.join(active)}. Using remote transcription.", log)
     else:
-        log_message("No Groq API key found. Falling back to local model (CPU/GPU).", log)
+        log_message("No API keys found. Falling back to local model.", log)
         model, device = load_transcription_model(log)
 
     # Use provided list or fall back to directory scanning
@@ -378,16 +388,20 @@ def run_transcriptions(episode_list=None, log=None):
                     log
                 )
                 
-                # Pacing: Groq Free Tier typically allows ~3 RPM (1 request every 20s).
-                # We subtract the 'elapsed' time already spent on this request to maximize speed.
-                if device == "Groq API" and text is not None:
-                    pacing_delay = 50  # More conservative to avoid huge TPM "penalty box" waits
+                # Pacing: API providers typically require delays to avoid rate limits.
+                if device == "API Cluster" and text is not None:
+                    pacing_delay = 40 
                     remaining_wait = max(0, pacing_delay - elapsed)
                     if remaining_wait > 0:
-                        log_message(f"Pacing: waiting {remaining_wait:.1f}s to protect {device} rate limits...", log)
+                        log_message(f"Pacing: waiting {remaining_wait:.1f}s before next file...", log)
                         time.sleep(remaining_wait)
 
             except Exception as e:
+                # If an API limit was hit, add a cooldown before the next episode
+                if "429" in str(e) or "limit" in str(e).lower():
+                    log_message("API limit reached. Cooldown 15s before next attempt.", log)
+                    time.sleep(15)
+
                 if device != "cuda" or not cuda_runtime_error(e):
                     raise
 
