@@ -425,7 +425,7 @@ def run_transcriptions(episode_list=None, log=None):
 
             # If transcribe_audio returned None (e.g. skipped due to size), continue to next file
             if text is None:
-                break
+                continue
 
             tmp_path = txt_path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:

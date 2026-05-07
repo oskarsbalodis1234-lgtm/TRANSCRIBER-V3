@@ -94,7 +94,7 @@ def home():
         <body>
             <h1>Podcast Transcriber</h1>
 
-            <form action="/run">
+            <form id="runForm">
                 <input name="rss" placeholder="Paste RSS link" required>
                 <button type="submit">Start</button>
             </form>
@@ -107,16 +107,39 @@ def home():
 
             <script {%- if is_job_running() %} data-running="true" {% endif -%}>
                 const box = document.getElementById("logbox");
-                const source = new EventSource("/stream");
+                let source = new EventSource("/stream");
 
-                source.onmessage = function(event) {
+                const handleMessage = function(event) {
                     if (event.data === "__keepalive__") return;
+                    
+                    // Svuota il box se riceve il segnale di inizio o di reset avvenuto
+                    if (event.data === "state:starting_pipeline" || event.data.includes("System reset")) {
+                        box.textContent = "";
+                    }
+
                     box.textContent += event.data + "\\n";
                     box.scrollTop = box.scrollHeight;
                     
                     if (event.data === "state:done" || event.data.startsWith("state:error")) {
                         source.close();
                     }
+                };
+
+                source.onmessage = handleMessage;
+
+                document.getElementById("runForm").onsubmit = function(e) {
+                    e.preventDefault();
+                    const rss = this.rss.value;
+                    fetch(`/run?rss=${encodeURIComponent(rss)}`).then(r => {
+                        if (r.status === 409) alert("Job already running");
+                        else {
+                            box.textContent = ""; // Svuota immediatamente per feedback visivo
+                            if (source.readyState === 2) { // Se chiuso, riapri
+                                source = new EventSource("/stream");
+                                source.onmessage = handleMessage;
+                            }
+                        }
+                    });
                 };
             </script>
         </body>
@@ -191,7 +214,8 @@ def stream():
 
             if len(LOG) > last:
                 for i in range(last, len(LOG)):
-                    yield f"data: {LOG[i]}\n\n"
+                    for line in str(LOG[i]).splitlines():
+                        yield f"data: {line}\n\n"
                 last = len(LOG)
             
             # Detect if thread died without setting state:done
