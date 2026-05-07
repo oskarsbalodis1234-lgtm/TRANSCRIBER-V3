@@ -4,3 +4,4 @@ beautifulsoup4
 lxml
 faster-whisper
 gunicorn
+deepgram-sdk

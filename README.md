@@ -11,6 +11,11 @@ faster-whisper, and creates a ZIP containing transcripts plus episode metadata.
 
 Open `http://localhost:5000`.
 
+## Live Streaming
+
+To transcribe a live audio stream using Deepgram Nova-3, use:
+`bash live_stream.sh` (Requires ffmpeg, websocat, and jq).
+
 For a 4 GB GPU, these settings are a good balance:
 
 ```powershell

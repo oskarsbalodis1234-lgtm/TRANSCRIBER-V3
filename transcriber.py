@@ -179,16 +179,46 @@ def load_transcription_model(log=None, device_override=None):
 
 def transcribe_audio(model, mp3_path, options, log=None):
     import requests
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
 
-    if api_key:
+    # 1. Try Deepgram SDK (Nova-3)
+    if deepgram_key:
+        try:
+            from deepgram import DeepgramClient, PrerecordedOptions, FileSource
+            
+            log_message(f"Sending {os.path.basename(mp3_path)} to Deepgram...", log)
+            started = time.perf_counter()
+            deepgram = DeepgramClient(deepgram_key)
+
+            with open(mp3_path, "rb") as audio:
+                source = {"buffer": audio}
+                dg_options = PrerecordedOptions(
+                    model="nova-3",
+                    smart_format=True,
+                    language=options.get("language", "en")
+                )
+                response = deepgram.listen.rest.v("1").transcribe_file(source, dg_options, timeout=300)
+
+            text = response.results.channels[0].alternatives[0].transcript
+            duration = response.metadata.duration
+            elapsed = time.perf_counter() - started
+            
+            info = type('obj', (object,), {'duration': duration, 'language': options.get("language") or "en"})
+            return text, info, elapsed
+        except Exception as e:
+            log_message(f"Deepgram API failed: {e}", log)
+
+    # 2. Try Groq (Fast & Free, but strict hourly limits)
+    if groq_key:
         file_size = os.path.getsize(mp3_path)
         if file_size > 25 * 1024 * 1024:
             log_message(f"Warning: {os.path.basename(mp3_path)} is {file_size/(1024*1024):.1f}MB. Groq limit is 25MB.", log)
 
         started = time.perf_counter()
         url = "https://api.groq.com/openai/v1/audio/transcriptions"
-        headers = {"Authorization": f"Bearer {api_key}"}
+        headers = {"Authorization": f"Bearer {groq_key}"}
         
         max_retries = 8
         for attempt in range(max_retries):
@@ -199,14 +229,14 @@ def transcribe_audio(model, mp3_path, options, log=None):
                         "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
                         "model": (None, "whisper-large-v3"),
                         "language": (None, options.get("language", "en")),
-                        "response_format": (None, "json"),
+                        "response_format": (None, "verbose_json"),
                     }
                     log_message(f"Sending {os.path.basename(mp3_path)} to Groq (Attempt {attempt + 1})...", log)
                     response = requests.post(url, headers=headers, files=files, timeout=300)
                     
                     if response.status_code == 413:
                         log_message(f"Error: {os.path.basename(mp3_path)} is too large for Groq (Max 25MB). Skipping.", log)
-                        return None, None, 0
+                        break # Try next provider
                     
                     response.raise_for_status()
                     
@@ -237,9 +267,13 @@ def transcribe_audio(model, mp3_path, options, log=None):
                                 pass
 
                     if status_code == 429:
-                        # Try to get the specific reason from Groq's JSON response
                         try:
-                            error_details = e.response.json().get("error", {}).get("message", "Quota exhausted")
+                            resp_json = e.response.json()
+                            error_details = resp_json.get("error", {}).get("message", "Quota exhausted")
+                            # Check if it's the specific ASPH limit
+                            if "seconds of audio per hour" in error_details.lower():
+                                log_message("Groq Limit: Hourly audio duration limit reached (ASPH).", log)
+                            
                             log_message(f"Groq Rate Limit: {error_details}. Retrying in {wait_time:.1f}s...", log)
                         except Exception:
                             log_message(f"Groq Rate Limit (429): Token quota likely exhausted. Retrying in {wait_time:.1f}s...", log)
@@ -260,6 +294,37 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 log_message(f"Groq API failed, falling back to local: {e}", log)
                 # Break out of retry loop to hit local transcription logic below
                 break
+
+    # 3. Try OpenAI (Very accurate, paid but reliable)
+    if openai_key:
+        try:
+            file_size = os.path.getsize(mp3_path)
+            if file_size > 25 * 1024 * 1024:
+                log_message(f"OpenAI error: {os.path.basename(mp3_path)} exceeds 25MB limit.", log)
+            else:
+                log_message(f"Sending {os.path.basename(mp3_path)} to OpenAI...", log)
+                started = time.perf_counter()
+                url = "https://api.openai.com/v1/audio/transcriptions"
+                headers = {"Authorization": f"Bearer {openai_key}"}
+                with open(mp3_path, "rb") as f:
+                    files = {
+                        "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
+                        "model": (None, "whisper-1"),
+                        "language": (None, options.get("language", "en")),
+                    }
+                    response = requests.post(url, headers=headers, files=files, timeout=300)
+                    response.raise_for_status()
+                
+                result = response.json()
+                text = result.get("text", "")
+                # OpenAI doesn't return duration in the basic response, 
+                # we can estimate it if needed, but 0 is safe.
+                duration = 0 
+                elapsed = time.perf_counter() - started
+                info = type('obj', (object,), {'duration': duration, 'language': options.get("language") or "en"})
+                return text, info, elapsed
+        except Exception as e:
+            log_message(f"OpenAI API failed: {e}", log)
 
     # This point is only reached if Groq is disabled or failed and a local model exists
     started = time.perf_counter()
@@ -362,7 +427,7 @@ def run_transcriptions(episode_list=None, log=None):
                     pacing_delay = 50  # More conservative to avoid huge TPM "penalty box" waits
                     remaining_wait = max(0, pacing_delay - elapsed)
                     if remaining_wait > 0:
-                        log_message(f"Pacing: waiting {remaining_wait:.1f}s to avoid Groq rate limit...", log)
+                        log_message(f"Pacing: waiting {remaining_wait:.1f}s to protect {device} rate limits...", log)
                         time.sleep(remaining_wait)
 
             except Exception as e:
