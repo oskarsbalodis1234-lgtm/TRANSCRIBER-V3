@@ -188,20 +188,19 @@ def transcribe_audio(model, mp3_path, options, log=None):
     if deepgram_key:
         try:
             from deepgram import DeepgramClient
-            from deepgram.models.listen.v1 import PrerecordedOptions
             
             log_message(f"[{os.path.basename(mp3_path)}] Attempting Deepgram API...", log)
             started = time.perf_counter()
-            deepgram = DeepgramClient(deepgram_key)
+            deepgram = DeepgramClient(api_key=deepgram_key)
 
             with open(mp3_path, "rb") as audio:
-                source = {"buffer": audio}
-                dg_options = PrerecordedOptions(
-                    model="nova-3",
-                    smart_format=True,
-                    language=options.get("language", "it")
-                )
-                response = deepgram.listen.v1.media.transcribe_file(source_payload, **dg_options)
+                source_payload = {"buffer": audio.read()}
+                dg_options = {
+                    "model": "nova-3",
+                    "smart_format": True,
+                    "language": options.get("language", "it")
+                }
+                response = deepgram.listen.v1.media.transcribe_file(source_payload, dg_options)
 
             text = response.results.channels[0].alternatives[0].transcript
             duration = response.metadata.duration
