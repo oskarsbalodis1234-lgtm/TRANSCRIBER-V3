@@ -12,15 +12,17 @@ app = Flask(__name__)
 
 LOG = []
 MAX_LOG_LINES = 1000
+LOG_LOCK = threading.Lock()
 JOB_LOCK = threading.Lock()
 JOB_RUNNING = False
 
 
 def log(msg):
     print(msg, flush=True)
-    LOG.append(msg)
-    if len(LOG) > MAX_LOG_LINES:
-        del LOG[: len(LOG) - MAX_LOG_LINES]
+    with LOG_LOCK:
+        LOG.append(msg)
+        if len(LOG) > MAX_LOG_LINES:
+            del LOG[: len(LOG) - MAX_LOG_LINES]
 
 
 def set_job_running(value):
@@ -35,8 +37,6 @@ def is_job_running():
 
 
 def run_pipeline(rss_url):
-    LOG.clear()
-    set_job_running(True)
 
     log("state:starting_pipeline")
     log(f"rss:{rss_url}")
@@ -113,7 +113,7 @@ def home():
                     if (event.data === "__keepalive__") return;
                     
                     // Svuota il box se riceve il segnale di inizio o di reset avvenuto
-                    if (event.data === "state:starting_pipeline" || event.data.includes("System reset")) {
+                    if (event.data === "state:starting_pipeline") {
                         box.textContent = "";
                     }
 
@@ -129,15 +129,13 @@ def home():
 
                 document.getElementById("runForm").onsubmit = function(e) {
                     e.preventDefault();
-                    const rss = this.rss.value;
+                    box.textContent = ""; 
+                    const rss = this.querySelector('input').value;
                     fetch(`/run?rss=${encodeURIComponent(rss)}`).then(r => {
                         if (r.status === 409) alert("Job already running");
-                        else {
-                            box.textContent = ""; // Svuota immediatamente per feedback visivo
-                            if (source.readyState === 2) { // Se chiuso, riapri
-                                source = new EventSource("/stream");
-                                source.onmessage = handleMessage;
-                            }
+                        else if (source.readyState === 2) {
+                            source = new EventSource("/stream");
+                            source.onmessage = handleMessage;
                         }
                     });
                 };
@@ -158,6 +156,11 @@ def run():
 
     if is_job_running():
         return "A transcription job is already running", 409
+
+    # Pulizia immediata prima di avviare il thread per evitare race conditions
+    with LOG_LOCK:
+        LOG.clear()
+    set_job_running(True)
 
     thread = threading.Thread(target=run_pipeline, args=(rss,), daemon=True)
     thread.start()
@@ -195,7 +198,8 @@ def reset():
         ensure_data_dirs()
 
         # 5. Clear memory logs last
-        LOG.clear()
+        with LOG_LOCK:
+            LOG.clear()
         log("System reset: All files and logs cleared.")
         return "Success", 200
     except Exception as e:
@@ -209,23 +213,25 @@ def stream():
         last = 0
 
         while True:
-            if last > len(LOG): # Handle log reset/clear
-                last = 0
+            with LOG_LOCK:
+                if last > len(LOG): # Handle log reset/clear
+                    last = 0
 
-            if len(LOG) > last:
-                for i in range(last, len(LOG)):
-                    for line in str(LOG[i]).splitlines():
-                        yield f"data: {line}\n\n"
-                last = len(LOG)
-            
-            # Detect if thread died without setting state:done
+                current_logs = []
+                if len(LOG) > last:
+                    current_logs = LOG[last:]
+                    last = len(LOG)
+
+            for entry in current_logs:
+                for line in str(entry).splitlines():
+                    yield f"data: {line}\n\n"
+
             if not is_job_running() and last >= len(LOG):
                 if len(LOG) > 0 and "state:done" not in LOG and "state:error" not in LOG:
                     yield "data: Error: The background process crashed (likely Out of Memory).\n\n"
                 break
 
-            else:
-                yield "data: __keepalive__\n\n"
+            yield "data: __keepalive__\n\n"
 
             time.sleep(1)
             
