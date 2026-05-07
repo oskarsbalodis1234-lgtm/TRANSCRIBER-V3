@@ -182,6 +182,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    last_error = "No API keys provided"
 
     # 1. Try Deepgram SDK (Nova-3)
     if deepgram_key:
@@ -208,7 +209,8 @@ def transcribe_audio(model, mp3_path, options, log=None):
             info = type('obj', (object,), {'duration': duration, 'language': options.get("language") or "en"})
             return text, info, elapsed
         except Exception as e:
-            log_message(f"Deepgram failed: {e}", log)
+            last_error = f"Deepgram failed: {e}"
+            log_message(last_error, log)
     else:
         log_message("Deepgram: No API key found, skipping.", log)
 
@@ -249,7 +251,8 @@ def transcribe_audio(model, mp3_path, options, log=None):
                     return text, info, elapsed
 
         except Exception as e:
-            log_message(f"Groq failed: {e}", log)
+            last_error = f"Groq failed: {e}"
+            log_message(last_error, log)
     else:
         log_message("Groq: No API key found, skipping.", log)
 
@@ -282,13 +285,14 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 info = type('obj', (object,), {'duration': duration, 'language': options.get("language") or "en"})
                 return text, info, elapsed
         except Exception as e:
-            log_message(f"OpenAI failed: {e}", log)
+            last_error = f"OpenAI failed: {e}"
+            log_message(last_error, log)
     else:
         log_message("OpenAI: No API key found, skipping.", log)
 
     # This point is only reached if all APIs failed or were skipped
     if model is None:
-        raise RuntimeError("No working API providers available and local model is disabled.")
+        raise RuntimeError(f"All transcription APIs failed: {last_error}")
 
     started = time.perf_counter()
     segments, info = model.transcribe(mp3_path, **options)
@@ -379,7 +383,9 @@ def run_transcriptions(episode_list=None, log=None):
             log_message(f"Already transcribed: {safe_filename}", log)
             continue
 
-        try:
+        success = False
+        attempts = 0
+        while not success and attempts < 3:
             try:
                 text, info, elapsed = transcribe_audio(
                     model,
@@ -395,15 +401,22 @@ def run_transcriptions(episode_list=None, log=None):
                     if remaining_wait > 0:
                         log_message(f"Pacing: waiting {remaining_wait:.1f}s before next file...", log)
                         time.sleep(remaining_wait)
+                
+                success = True
 
             except Exception as e:
+                error_msg = str(e)
                 # If an API limit was hit, add a cooldown before the next episode
-                if "429" in str(e) or "limit" in str(e).lower():
-                    log_message("API limit reached. Cooldown 15s before next attempt.", log)
-                    time.sleep(15)
+                if "429" in error_msg or "limit" in error_msg.lower():
+                    attempts += 1
+                    wait = 20 * attempts
+                    log_message(f"Rate limit hit. Waiting {wait}s before retrying episode (Attempt {attempts}/3)...", log)
+                    time.sleep(wait)
+                    continue
 
                 if device != "cuda" or not cuda_runtime_error(e):
-                    raise
+                    log_message(f"Error transcribing {file}: {error_msg}", log)
+                    break
 
                 log_message(
                     (
