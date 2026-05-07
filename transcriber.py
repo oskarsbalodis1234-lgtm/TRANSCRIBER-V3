@@ -211,10 +211,12 @@ def transcribe_audio(model, mp3_path, options, log=None):
                     
                     result = response.json()
                     text = result.get("text", "")
+                    duration = result.get("duration", 0)
+                    detected_lang = result.get("language") or options.get("language") or "en"
                     elapsed = time.perf_counter() - started
                     
                     # Create a mock info object that looks like the faster-whisper output
-                    info = type('obj', (object,), {'duration': 0, 'language': options.get("language") or "en"})
+                    info = type('obj', (object,), {'duration': duration, 'language': detected_lang})
                     return text, info, elapsed
 
             except Exception as e:
@@ -222,8 +224,17 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 
                 # Retry on Rate Limit (429) or Server Errors (502, 503, 504)
                 if status_code in [429, 502, 503, 504] and attempt < max_retries - 1:
-                    # Aggressive exponential backoff for Free Tier: 20s, 40s, 80s...
                     wait_time = (2 ** attempt) * 20 + random.uniform(0, 5)
+                    
+                    # Try to respect Groq's Retry-After header if available
+                    if hasattr(e, 'response') and e.response is not None:
+                        retry_after = e.response.headers.get("Retry-After")
+                        if retry_after:
+                            try:
+                                wait_time = float(retry_after) + random.uniform(0, 1)
+                            except (ValueError, TypeError):
+                                pass
+
                     log_message(f"Groq busy or error ({status_code}). Retrying in {wait_time}s...", log)
                     time.sleep(wait_time)
                     continue
@@ -234,6 +245,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 # Break out of retry loop to hit local transcription logic below
                 break
 
+    # This point is only reached if Groq is disabled or failed and a local model exists
     started = time.perf_counter()
     segments, info = model.transcribe(mp3_path, **options)
     text = "".join(segment.text for segment in segments).strip()
@@ -331,7 +343,7 @@ def run_transcriptions(episode_list=None, log=None):
                 # Pacing: Groq Free Tier typically allows ~3 RPM (1 request every 20s).
                 # We subtract the 'elapsed' time already spent on this request to maximize speed.
                 if device == "Groq API" and text is not None:
-                    pacing_delay = 35
+                    pacing_delay = 25  # Optimized for 3 RPM (60s / 3 = 20s)
                     remaining_wait = max(0, pacing_delay - elapsed)
                     if remaining_wait > 0:
                         log_message(f"Pacing: waiting {remaining_wait:.1f}s to avoid Groq rate limit...", log)
