@@ -274,25 +274,22 @@ def transcribe_audio(model, mp3_path, options, log=None):
                             if "seconds of audio per hour" in error_details.lower():
                                 log_message("Groq Limit: Hourly audio duration limit reached (ASPH).", log)
                             
-                            log_message(f"Groq Rate Limit: {error_details}. Retrying in {wait_time:.1f}s...", log)
+                            log_message(f"Groq Rate Limit: {error_details}. Wait time: {wait_time:.1f}s", log)
                         except Exception:
-                            log_message(f"Groq Rate Limit (429): Token quota likely exhausted. Retrying in {wait_time:.1f}s...", log)
+                            log_message(f"Groq Rate Limit (429): Quota exhausted. Wait time: {wait_time:.1f}s", log)
+                        
+                        if openai_key and wait_time > 30:
+                            log_message("Wait time too long for Groq. Trying OpenAI...", log)
+                            break
+
+                        log_message(f"Retrying Groq in {wait_time:.1f}s...", log)
                     else:
                         log_message(f"Groq busy or error ({status_code}). Retrying in {wait_time:.1f}s...", log)
 
                     time.sleep(wait_time)
                     continue
                 
-                if model is None:
-                    # Try to provide the most descriptive error message possible
-                    final_detail = str(e)
-                    try:
-                        final_detail = e.response.json().get("error", {}).get("message", str(e))
-                    except Exception:
-                        pass
-                    raise RuntimeError(f"Groq API failed after {max_retries} attempts: {final_detail}")
-                log_message(f"Groq API failed, falling back to local: {e}", log)
-                # Break out of retry loop to hit local transcription logic below
+                log_message(f"Groq API failed: {e}", log)
                 break
 
     # 3. Try OpenAI (Very accurate, paid but reliable)
@@ -326,7 +323,10 @@ def transcribe_audio(model, mp3_path, options, log=None):
         except Exception as e:
             log_message(f"OpenAI API failed: {e}", log)
 
-    # This point is only reached if Groq is disabled or failed and a local model exists
+    # This point is only reached if all APIs failed or were skipped
+    if model is None:
+        raise RuntimeError("All transcription APIs failed and no local model is loaded.")
+
     started = time.perf_counter()
     segments, info = model.transcribe(mp3_path, **options)
     text = "".join(segment.text for segment in segments).strip()
