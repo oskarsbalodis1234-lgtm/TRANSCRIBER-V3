@@ -237,7 +237,12 @@ def transcribe_audio(model, mp3_path, options, log=None):
                                 pass
 
                     if status_code == 429:
-                        log_message(f"Groq Rate Limit (429): Token quota likely exhausted. Retrying in {wait_time:.1f}s...", log)
+                        # Try to get the specific reason from Groq's JSON response
+                        try:
+                            error_details = e.response.json().get("error", {}).get("message", "Quota exhausted")
+                            log_message(f"Groq Rate Limit: {error_details}. Retrying in {wait_time:.1f}s...", log)
+                        except Exception:
+                            log_message(f"Groq Rate Limit (429): Token quota likely exhausted. Retrying in {wait_time:.1f}s...", log)
                     else:
                         log_message(f"Groq busy or error ({status_code}). Retrying in {wait_time:.1f}s...", log)
 
@@ -245,7 +250,13 @@ def transcribe_audio(model, mp3_path, options, log=None):
                     continue
                 
                 if model is None:
-                    raise RuntimeError(f"Groq API failed: {e}")
+                    # Try to provide the most descriptive error message possible
+                    final_detail = str(e)
+                    try:
+                        final_detail = e.response.json().get("error", {}).get("message", str(e))
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"Groq API failed after {max_retries} attempts: {final_detail}")
                 log_message(f"Groq API failed, falling back to local: {e}", log)
                 # Break out of retry loop to hit local transcription logic below
                 break
