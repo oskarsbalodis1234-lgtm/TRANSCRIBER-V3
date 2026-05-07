@@ -113,7 +113,7 @@ def home():
                     if (event.data === "__keepalive__") return;
                     
                     // Svuota il box se riceve il segnale di inizio o di reset avvenuto
-                    if (event.data === "state:starting_pipeline") {
+                    if (event.data === "state:starting_pipeline" || event.data.includes("System reset")) {
                         box.textContent = "";
                     }
 

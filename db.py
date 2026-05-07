@@ -49,3 +49,8 @@ def mark_downloaded(uid):
 def mark_transcribed(uid):
     c.execute("UPDATE episodes SET transcribed=1 WHERE uid=?", (uid,))
     conn.commit()
+
+def clear_db():
+    """Remove all records from the episodes table."""
+    c.execute("DELETE FROM episodes")
+    conn.commit()
