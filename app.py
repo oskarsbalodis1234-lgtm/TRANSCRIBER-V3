@@ -49,7 +49,7 @@ def is_job_running():
         return JOB_RUNNING
 
 
-def run_pipeline(rss_url):
+def run_pipeline(rss_url, language):
 
     log("state:starting_pipeline")
     log(f"rss:{rss_url}")
@@ -73,7 +73,7 @@ def run_pipeline(rss_url):
 
         log("state:transcribing")
         from transcriber import run_transcriptions
-        run_transcriptions(episode_list, log, is_cancelled)
+        run_transcriptions(episode_list, log, is_cancelled, language)
         if is_cancelled(): return
 
         log("state:zipping")
@@ -103,7 +103,8 @@ def home():
             <style>
                 body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 900px; }
                 form { display: flex; gap: .5rem; margin-bottom: 1rem; }
-                input { flex: 1; min-width: 0; padding: .55rem .65rem; }
+                input, select { padding: .55rem .65rem; }
+                input { flex: 1; min-width: 0; }
                 button, a.button { padding: .55rem .8rem; }
                 pre { background: #111; color: #eee; min-height: 360px; padding: 1rem; overflow: auto; white-space: pre-wrap; }
             </style>
@@ -113,6 +114,15 @@ def home():
 
             <form id="runForm">
                 <input name="rss" placeholder="Paste RSS link" required>
+                <select name="language" aria-label="Transcript language">
+                    <option value="auto">Auto detect</option>
+                    <option value="lv">Latvian</option>
+                    <option value="de">German</option>
+                    <option value="fr">French</option>
+                    <option value="it" selected>Italian</option>
+                    <option value="en">English</option>
+                    <option value="ru">Russian</option>
+                </select>
                 <button type="submit">Start</button>
             </form>
 
@@ -150,9 +160,9 @@ def home():
 
                 document.getElementById("runForm").onsubmit = function(e) {
                     e.preventDefault();
-                    const input = this.querySelector('input');
-                    const rss = input.value;
-                    fetch(`/run?rss=${encodeURIComponent(rss)}`).then(r => {
+                    const rss = this.elements.rss.value;
+                    const language = this.elements.language.value;
+                    fetch(`/run?rss=${encodeURIComponent(rss)}&language=${encodeURIComponent(language)}`).then(r => {
                         if (r.status === 409) alert("Job already running");
                         else {
                             box.textContent = ""; // Visual clear immediately
@@ -174,6 +184,7 @@ def home():
 @app.route("/run")
 def run():
     rss = request.args.get("rss", "").strip()
+    language = request.args.get("language", "it").strip()
 
     if not rss:
         return "No RSS provided", 400
@@ -186,7 +197,7 @@ def run():
         LOG.clear()
     set_job_running(True)
 
-    thread = threading.Thread(target=run_pipeline, args=(rss,), daemon=True)
+    thread = threading.Thread(target=run_pipeline, args=(rss, language), daemon=True)
     thread.start()
 
     return "Running..."

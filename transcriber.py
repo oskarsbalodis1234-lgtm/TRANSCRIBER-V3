@@ -183,6 +183,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     last_error = "No API keys provided"
+    language = options.get("language")
 
     # 1. Try Deepgram SDK (Nova-3)
     if deepgram_key:
@@ -190,7 +191,9 @@ def transcribe_audio(model, mp3_path, options, log=None):
             log_message(f"[{os.path.basename(mp3_path)}] Attempting Deepgram API (REST)...", log)
             started = time.perf_counter()
             
-            url = f"https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&language={options.get('language', 'it')}"
+            url = "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true"
+            if language:
+                url += f"&language={language}"
             headers = {
                 "Authorization": f"Token {deepgram_key}",
                 "Content-Type": "audio/mpeg"
@@ -205,7 +208,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
             duration = result['metadata']['duration']
             elapsed = time.perf_counter() - started
             
-            info = type('obj', (object,), {'duration': duration, 'language': options.get("language") or "it"})
+            info = type('obj', (object,), {'duration': duration, 'language': language or "auto"})
             return text, info, elapsed
         except Exception as e:
             last_error = f"Deepgram failed: {e}"
@@ -226,9 +229,10 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 files = {
                     "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
                     "model": (None, "whisper-large-v3"),
-                    "language": (None, options.get("language", "it")),
                     "response_format": (None, "verbose_json"),
                 }
+                if language:
+                    files["language"] = (None, language)
                 log_message(f"[{os.path.basename(mp3_path)}] Attempting Groq API...", log)
                 response = requests.post(url, headers=headers, files=files, timeout=300)
                 
@@ -240,7 +244,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
                     result = response.json()
                     text = result.get("text", "")
                     duration = result.get("duration", 0)
-                    detected_lang = result.get("language") or options.get("language") or "it"
+                    detected_lang = result.get("language") or language or "auto"
                     elapsed = time.perf_counter() - started
                     
                     # Create a mock info object that looks like the faster-whisper output
@@ -266,8 +270,9 @@ def transcribe_audio(model, mp3_path, options, log=None):
                     files = {
                         "file": (os.path.basename(mp3_path), f, "audio/mpeg"),
                         "model": (None, "whisper-1"),
-                        "language": (None, options.get("language", "it")),
                     }
+                    if language:
+                        files["language"] = (None, language)
                     response = requests.post(url, headers=headers, files=files, timeout=300)
                     response.raise_for_status()
                 
@@ -277,7 +282,7 @@ def transcribe_audio(model, mp3_path, options, log=None):
                 # we can estimate it if needed, but 0 is safe.
                 duration = 0 
                 elapsed = time.perf_counter() - started
-                info = type('obj', (object,), {'duration': duration, 'language': options.get("language") or "it"})
+                info = type('obj', (object,), {'duration': duration, 'language': language or "auto"})
                 return text, info, elapsed
         except Exception as e:
             last_error = f"OpenAI failed: {e}"
@@ -309,14 +314,15 @@ def get_episode_files():
     return files_with_metadata
 
 
-def run_transcriptions(episode_list=None, log=None, check_cancel=None):
-    language = os.getenv("WHISPER_LANGUAGE", "it")
+def run_transcriptions(episode_list=None, log=None, check_cancel=None, language=None):
+    language = (language or os.getenv("WHISPER_LANGUAGE", "it")).strip().lower()
+    if language == "auto":
+        language = None
     beam_size = env_int("WHISPER_BEAM_SIZE", 1)
     batch_size = env_int("WHISPER_BATCH_SIZE", 16)
     vad_filter = env_bool("WHISPER_VAD_FILTER", True)
     
     transcription_options = {
-        "language": language,
         "beam_size": beam_size,
         "batch_size": batch_size,
         "temperature": 0.0,
@@ -330,6 +336,8 @@ def run_transcriptions(episode_list=None, log=None, check_cancel=None):
         },
         "hallucination_silence_threshold": 2.0,
     }
+    if language:
+        transcription_options["language"] = language
 
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
     deepgram_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
