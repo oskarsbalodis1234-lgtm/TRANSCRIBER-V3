@@ -142,7 +142,7 @@ def load_transcription_model(log=None, device_override=None):
     )
     cpu_threads = env_int("WHISPER_CPU_THREADS", 1) # Reduce threads to save memory overhead
     num_workers = env_int("WHISPER_NUM_WORKERS", 1)
-    use_flash_attention = env_bool("WHISPER_FLASH_ATTENTION", device == "cuda")
+    use_flash_attention = env_bool("WHISPER_FLASH_ATTENTION", False)
 
     load_attempts = [(device, compute_type)]
     if device == "cuda" and compute_type != "int8_float16":

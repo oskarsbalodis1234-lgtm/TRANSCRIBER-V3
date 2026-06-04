@@ -4,6 +4,7 @@ import time
 import traceback
 
 from flask import Flask, Response, render_template_string, request, send_file
+from werkzeug.utils import secure_filename
 
 from config import ZIP_PATH, ensure_data_dirs
 
@@ -47,6 +48,34 @@ def set_job_running(value):
 def is_job_running():
     with JOB_LOCK:
         return JOB_RUNNING
+
+
+def run_upload_pipeline(mp3_path, language):
+    log("state:starting_pipeline")
+    log(f"upload:{os.path.basename(mp3_path)}")
+
+    try:
+        ensure_data_dirs()
+        set_cancel(False)
+
+        log("state:transcribing")
+        from transcriber import run_transcriptions
+        episode_list = [{"file": os.path.basename(mp3_path), "title": os.path.splitext(os.path.basename(mp3_path))[0], "episode_number": 1}]
+        run_transcriptions(episode_list, log, is_cancelled, language)
+        if is_cancelled(): return
+
+        log("state:zipping")
+        from main import zip_and_cleanup
+        zip_and_cleanup(log)
+
+        log("state:done")
+
+    except Exception as e:
+        log("state:error")
+        log(str(e))
+        log(traceback.format_exc())
+    finally:
+        set_job_running(False)
 
 
 def run_pipeline(rss_url, language):
@@ -126,6 +155,20 @@ def home():
                 <button type="submit">Start</button>
             </form>
 
+            <form id="uploadForm" enctype="multipart/form-data" style="display:flex;gap:.5rem;margin-bottom:1rem;">
+                <input type="file" name="file" accept=".mp3,.wav,.m4a,.ogg" required style="flex:1">
+                <select name="language" aria-label="Transcript language">
+                    <option value="auto">Auto detect</option>
+                    <option value="lv">Latvian</option>
+                    <option value="de">German</option>
+                    <option value="fr">French</option>
+                    <option value="it" selected>Italian</option>
+                    <option value="en">English</option>
+                    <option value="ru">Russian</option>
+                </select>
+                <button type="submit">Upload &amp; Transcribe</button>
+            </form>
+
             <p>
                 <a class="button" href="/download">Download ZIP</a>
                 <button onclick="if(confirm('Clear all logs and transcripts?')) fetch('/reset').then(() => location.reload())" style="margin-left: 10px; color: #ff4444; background: none; border: 1px solid #ff4444; border-radius: 4px; cursor: pointer;">Reset System</button>
@@ -157,6 +200,22 @@ def home():
                 };
 
                 source.onmessage = handleMessage;
+
+                document.getElementById("uploadForm").onsubmit = function(e) {
+                    e.preventDefault();
+                    const formData = new FormData(this);
+                    fetch("/upload", { method: "POST", body: formData }).then(r => {
+                        if (r.status === 409) alert("Job already running");
+                        else if (!r.ok) r.text().then(t => alert("Error: " + t));
+                        else {
+                            box.textContent = "";
+                            if (source.readyState === 2) {
+                                source = new EventSource("/stream");
+                                source.onmessage = handleMessage;
+                            }
+                        }
+                    });
+                };
 
                 document.getElementById("runForm").onsubmit = function(e) {
                     e.preventDefault();
@@ -198,6 +257,34 @@ def run():
     set_job_running(True)
 
     thread = threading.Thread(target=run_pipeline, args=(rss, language), daemon=True)
+    thread.start()
+
+    return "Running..."
+
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    if is_job_running():
+        return "A transcription job is already running", 409
+
+    file = request.files.get("file")
+    language = request.form.get("language", "it").strip()
+
+    if not file or not file.filename:
+        return "No file provided", 400
+
+    from config import MP3_DIR, ensure_data_dirs
+    ensure_data_dirs()
+
+    safe_name = secure_filename(file.filename)
+    mp3_path = os.path.join(MP3_DIR, safe_name)
+    file.save(mp3_path)
+
+    with LOG_LOCK:
+        LOG.clear()
+    set_job_running(True)
+
+    thread = threading.Thread(target=run_upload_pipeline, args=(mp3_path, language), daemon=True)
     thread.start()
 
     return "Running..."
